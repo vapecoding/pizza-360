@@ -90,6 +90,53 @@
     opacity: 0.35;
     letter-spacing: 1px;
   }
+
+  /* --- Rotate hint (mobile portrait) --- */
+  #rotate-hint {
+    display: none;
+    text-align: center;
+    margin-top: 16px;
+    font-size: 12px;
+    opacity: 0.4;
+    letter-spacing: 0.5px;
+  }
+  #rotate-hint span {
+    display: inline-block;
+    font-size: 18px;
+    animation: rotateIcon 2s ease-in-out infinite;
+  }
+  @keyframes rotateIcon {
+    0%, 100% { transform: rotate(0deg); }
+    50% { transform: rotate(90deg); }
+  }
+
+  /* Mobile portrait: show rotate hint */
+  @media (max-width: 768px) and (orientation: portrait) {
+    #rotate-hint { display: block; }
+  }
+
+  /* Mobile landscape: fullscreen viewer */
+  @media (max-width: 932px) and (orientation: landscape) {
+    body { min-height: 100vh; min-height: 100dvh; }
+    #viewer {
+      max-width: 100%;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      height: 100vh;
+      height: 100dvh;
+    }
+    #canvas {
+      border-radius: 0;
+      width: auto;
+      height: 100vh;
+      height: 100dvh;
+      object-fit: contain;
+    }
+    #hint { display: none; }
+    #rotate-hint { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -105,6 +152,7 @@
 <div id="viewer">
   <canvas id="canvas"></canvas>
   <div id="hint">drag to rotate</div>
+  <div id="rotate-hint"><span>&#8635;</span> flip phone for fullscreen</div>
 </div>
 
 <script>
