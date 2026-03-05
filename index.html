@@ -74,6 +74,34 @@
   }
   #viewer.visible { opacity: 1; }
 
+  /* --- Switcher --- */
+  #switcher {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .switch-btn {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.15);
+    color: rgba(255,255,255,0.5);
+    padding: 8px 20px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: inherit;
+  }
+  .switch-btn:hover {
+    background: rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.8);
+  }
+  .switch-btn.active {
+    background: rgba(255,255,255,0.15);
+    border-color: rgba(255,255,255,0.4);
+    color: #fff;
+  }
+
   #canvas {
     display: block;
     width: 100%;
@@ -89,6 +117,23 @@
     font-size: 13px;
     opacity: 0.35;
     letter-spacing: 1px;
+  }
+
+  /* --- Progress bar --- */
+  #viewer-progress {
+    width: 100%;
+    height: 2px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 1px;
+    margin-top: 10px;
+    overflow: hidden;
+  }
+  #viewer-progress-inner {
+    height: 100%;
+    width: 0%;
+    background: rgba(255,255,255,0.4);
+    border-radius: 1px;
+    transition: width 0.05s linear;
   }
 
   /* --- Rotate hint (mobile portrait) --- */
@@ -110,12 +155,10 @@
     50% { transform: rotate(90deg); }
   }
 
-  /* Mobile portrait: show rotate hint */
   @media (max-width: 768px) and (orientation: portrait) {
     #rotate-hint { display: block; }
   }
 
-  /* Mobile landscape: fullscreen viewer */
   @media (max-width: 932px) and (orientation: landscape) {
     body { min-height: 100vh; min-height: 100dvh; }
     #viewer {
@@ -126,6 +169,21 @@
       justify-content: center;
       height: 100vh;
       height: 100dvh;
+    }
+    #switcher {
+      position: fixed;
+      top: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      margin-bottom: 0;
+    }
+    .switch-btn {
+      padding: 4px 14px;
+      font-size: 12px;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
     }
     #canvas {
       border-radius: 0;
@@ -150,7 +208,12 @@
 </div>
 
 <div id="viewer">
+  <div id="switcher">
+    <button class="switch-btn active" data-set="0">Pizza 1</button>
+    <button class="switch-btn" data-set="1">Pizza 2</button>
+  </div>
   <canvas id="canvas"></canvas>
+  <div id="viewer-progress"><div id="viewer-progress-inner"></div></div>
   <div id="hint">drag to rotate</div>
   <div id="rotate-hint"><span>&#8635;</span> flip phone for fullscreen</div>
 </div>
@@ -159,187 +222,135 @@
 (function () {
   'use strict';
 
-  // ============================================================
-  //  CONFIG
-  // ============================================================
-  const TOTAL_FRAMES  = 240;
-  const FRAME_WIDTH   = 1280;
-  const FRAME_HEIGHT  = 720;
-  const USE_REAL_FRAMES = true;
-  const FRAME_PATH    = (i) => `public/assets/frames/frame_${String(i + 1).padStart(3, '0')}.webp`;
+  // Build frame index map for set 2: skip frames around the junction (frame 240)
+  // to avoid the static-looking transition
+  const JUNCTION = 240;       // where pizza3-reverse ends and pizza2 begins
+  const SKIP_HALF = 30;       // how many frames on each side to thin out
+  const SKIP_STEP = 3;        // take every Nth frame in the skip zone
 
-  // Physics
-  const SENSITIVITY   = 1.2;           // px drag per frame switch (higher = slower)
-  const FRICTION      = 0.92;
-  const MIN_VELOCITY  = 0.3;
+  const SET2_START = 60;      // first usable file index (0-based)
+  const SET2_END   = 430;     // last usable file index (0-based)
 
-  // ============================================================
-  //  DOM refs
-  // ============================================================
+  function buildSet2Map() {
+    const map = [];
+    for (let i = SET2_START; i <= SET2_END; i++) {
+      const distFromJunction = Math.abs(i - JUNCTION);
+      if (distFromJunction < SKIP_HALF) {
+        if (distFromJunction % SKIP_STEP === 0) map.push(i);
+      } else {
+        map.push(i);
+      }
+    }
+    return map;
+  }
+  const set2Map = buildSet2Map();
+
+  const SETS = [
+    { total: 480, path: (i) => `public/assets/frames2/frame_${String(i + 1).padStart(3, '0')}.webp`, frameMap: set2Map },
+    { total: 240, path: (i) => `public/assets/frames/frame_${String(i + 1).padStart(3, '0')}.webp` },
+  ];
+
+  const FRAME_WIDTH  = 1280;
+  const FRAME_HEIGHT = 720;
+  const SENSITIVITY  = 1.2;
+  const FRICTION     = 0.92;
+  const MIN_VELOCITY = 0.3;
+
   const preloader   = document.getElementById('preloader');
   const progressBar = document.getElementById('progress-bar-inner');
   const progressPct = document.getElementById('progress-percent');
   const viewer      = document.getElementById('viewer');
   const canvas      = document.getElementById('canvas');
   const ctx         = canvas.getContext('2d');
+  const buttons     = document.querySelectorAll('.switch-btn');
 
-  // ============================================================
-  //  Generate placeholder frames (offscreen canvases)
-  // ============================================================
-  function generatePlaceholderFrame(index, total) {
-    const oc = document.createElement('canvas');
-    oc.width  = FRAME_WIDTH;
-    oc.height = FRAME_HEIGHT;
-    const c   = oc.getContext('2d');
+  // Load all sets (only mapped frames for sets with frameMap)
+  function preloadAllSets() {
+    let totalImages = 0;
+    SETS.forEach(set => { totalImages += set.frameMap ? set.frameMap.length : set.total; });
+    let loaded = 0;
+    const allSets = SETS.map(() => []);
 
-    // Background gradient that shifts with angle
-    const angle = (index / total) * 360;
-    const hue   = angle;
-    c.fillStyle = `hsl(${hue}, 18%, 12%)`;
-    c.fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
-
-    // "Pizza" circle
-    const cx = FRAME_WIDTH / 2;
-    const cy = FRAME_HEIGHT / 2;
-    const r  = Math.min(FRAME_WIDTH, FRAME_HEIGHT) * 0.35;
-
-    // Simulate 3D rotation: slight ellipse distortion
-    const rotRad    = (angle * Math.PI) / 180;
-    const scaleX    = 0.85 + 0.15 * Math.cos(rotRad);
-    const offsetX   = Math.sin(rotRad) * 30;
-
-    c.save();
-    c.translate(cx + offsetX, cy);
-    c.scale(scaleX, 1);
-
-    // Crust
-    c.beginPath();
-    c.arc(0, 0, r, 0, Math.PI * 2);
-    c.fillStyle = '#d4a24e';
-    c.fill();
-
-    // Sauce
-    c.beginPath();
-    c.arc(0, 0, r * 0.88, 0, Math.PI * 2);
-    c.fillStyle = '#c0392b';
-    c.fill();
-
-    // Cheese
-    c.beginPath();
-    c.arc(0, 0, r * 0.82, 0, Math.PI * 2);
-    c.fillStyle = '#f5d76e';
-    c.fill();
-
-    // Pepperoni slices — positions rotate with the angle
-    const pepCount = 8;
-    for (let p = 0; p < pepCount; p++) {
-      const a = ((p / pepCount) * Math.PI * 2) + rotRad;
-      const pr = r * 0.55;
-      const px = Math.cos(a) * pr;
-      const py = Math.sin(a) * pr;
-      c.beginPath();
-      c.arc(px, py, r * 0.1, 0, Math.PI * 2);
-      c.fillStyle = '#922b21';
-      c.fill();
-    }
-
-    c.restore();
-
-    // Frame indicator
-    c.fillStyle = 'rgba(255,255,255,0.25)';
-    c.font = '16px monospace';
-    c.fillText(`frame ${index + 1} / ${total}`, 16, 28);
-
-    // Angle indicator
-    c.fillStyle = 'rgba(255,255,255,0.15)';
-    c.font = '13px monospace';
-    c.fillText(`${angle.toFixed(0)}°`, 16, 48);
-
-    return oc;
-  }
-
-  // ============================================================
-  //  Preload
-  // ============================================================
-  function preloadFrames() {
     return new Promise((resolve) => {
-      const frames = new Array(TOTAL_FRAMES);
-      let loaded = 0;
-
       function onProgress() {
         loaded++;
-        const pct = Math.round((loaded / TOTAL_FRAMES) * 100);
+        const pct = Math.round((loaded / totalImages) * 100);
         progressBar.style.width = pct + '%';
         progressPct.textContent = pct + '%';
-        if (loaded === TOTAL_FRAMES) resolve(frames);
+        if (loaded === totalImages) resolve(allSets);
       }
 
-      if (USE_REAL_FRAMES) {
-        // Real image loading
-        for (let i = 0; i < TOTAL_FRAMES; i++) {
+      SETS.forEach((set, si) => {
+        const indices = set.frameMap || Array.from({ length: set.total }, (_, i) => i);
+        allSets[si] = new Array(indices.length);
+        indices.forEach((fileIdx, arrIdx) => {
           const img = new Image();
-          img.onload  = () => { frames[i] = img; onProgress(); };
-          img.onerror = () => { frames[i] = img; onProgress(); };
-          img.src = FRAME_PATH(i);
-        }
-      } else {
-        // Placeholder generation (simulate async with microtasks)
-        let i = 0;
-        function generateBatch() {
-          const batchEnd = Math.min(i + 8, TOTAL_FRAMES);
-          while (i < batchEnd) {
-            frames[i] = generatePlaceholderFrame(i, TOTAL_FRAMES);
-            i++;
-            onProgress();
-          }
-          if (i < TOTAL_FRAMES) {
-            setTimeout(generateBatch, 0);
-          }
-        }
-        generateBatch();
-      }
+          img.onload  = () => { allSets[si][arrIdx] = img; onProgress(); };
+          img.onerror = () => { allSets[si][arrIdx] = img; onProgress(); };
+          img.src = set.path(fileIdx);
+        });
+      });
     });
   }
 
-  // ============================================================
-  //  Viewer
-  // ============================================================
   async function init() {
-    const frames = await preloadFrames();
+    const allSets = await preloadAllSets();
 
-    // Determine canvas size from first frame
-    const fw = frames[0].width  || FRAME_WIDTH;
-    const fh = frames[0].height || FRAME_HEIGHT;
-    canvas.width  = fw;
-    canvas.height = fh;
+    canvas.width  = FRAME_WIDTH;
+    canvas.height = FRAME_HEIGHT;
 
-    // Hide preloader, show viewer
     preloader.classList.add('hidden');
     viewer.classList.add('visible');
 
-    // --- State ---
-    let currentFrame   = 0;
-    let fractionalPos  = 0;      // sub-frame position for smooth physics
-    let velocity       = 0;
-    let dragging       = false;
-    let lastPointerX   = 0;
-    let rafId          = null;
+    const progressInner = document.getElementById('viewer-progress-inner');
 
-    // Velocity tracking (last N samples)
-    const velSamples   = [];
-    const MAX_SAMPLES  = 5;
+    let activeSet     = 0;
+    let frames        = allSets[activeSet];
+    let currentFrame  = 0;
+    let fractionalPos = 0;
+    let velocity      = 0;
+    let dragging      = false;
+    let lastPointerX  = 0;
+    let rafId         = null;
+    const velSamples  = [];
 
-    const maxFrame = TOTAL_FRAMES - 1;
+    function pingPong(pos, len) {
+      const cycle = len * 2;
+      let mod = ((pos % cycle) + cycle) % cycle;
+      if (mod < len) return mod;
+      return cycle - mod - 1;
+    }
 
-    // --- Render ---
-    function drawFrame(idx) {
-      idx = Math.max(0, Math.min(maxFrame, idx));
-      if (idx !== currentFrame) {
-        currentFrame = idx;
-      }
+    function loopWrap(pos, len) {
+      return ((pos % len) + len) % len;
+    }
+
+    function isLoop() { return !!SETS[activeSet].loop; }
+
+    function drawFrame(virtualPos) {
+      const len = frames.length;
+      const idx = Math.round(isLoop() ? loopWrap(virtualPos, len) : pingPong(virtualPos, len));
+      currentFrame = Math.max(0, Math.min(len - 1, idx));
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(frames[currentFrame], 0, 0, canvas.width, canvas.height);
+      const pct = (currentFrame / (len - 1)) * 100;
+      progressInner.style.width = pct + '%';
     }
+
+    function switchSet(idx) {
+      if (idx === activeSet) return;
+      activeSet = idx;
+      frames = allSets[activeSet];
+      fractionalPos = 0;
+      velocity = 0;
+      cancelInertia();
+      drawFrame(0);
+      buttons.forEach((b, i) => b.classList.toggle('active', i === idx));
+    }
+
+    buttons.forEach((btn) => {
+      btn.addEventListener('click', () => switchSet(Number(btn.dataset.set)));
+    });
 
     drawFrame(0);
 
@@ -360,102 +371,58 @@
       const dx = e.clientX - lastPointerX;
       lastPointerX = e.clientX;
 
-      // Scale sensitivity to canvas display width
       const displayWidth = canvas.getBoundingClientRect().width;
-      const pxPerFrame = (displayWidth / TOTAL_FRAMES) * SENSITIVITY;
+      const pxPerFrame = (displayWidth / frames.length) * SENSITIVITY;
       const frameDelta = dx / Math.max(pxPerFrame, 0.1);
 
-      fractionalPos = clamp(fractionalPos - frameDelta, 0, maxFrame);
-      drawFrame(Math.round(fractionalPos));
+      fractionalPos -= frameDelta;
+      drawFrame(fractionalPos);
 
-      // Track velocity
       velSamples.push({ dx: -frameDelta, t: performance.now() });
-      if (velSamples.length > MAX_SAMPLES) velSamples.shift();
+      if (velSamples.length > 5) velSamples.shift();
     }
 
-    function onPointerUp(e) {
+    function onPointerUp() {
       if (!dragging) return;
       dragging = false;
       canvas.classList.remove('grabbing');
-
-      // Calculate release velocity from recent samples
       velocity = computeReleaseVelocity();
-      if (Math.abs(velocity) > MIN_VELOCITY) {
-        startInertia();
-      }
+      if (Math.abs(velocity) > MIN_VELOCITY) startInertia();
     }
 
     function computeReleaseVelocity() {
       if (velSamples.length < 2) return 0;
       const now = performance.now();
-      // Only use samples from last 100ms
       const recent = velSamples.filter(s => now - s.t < 100);
       if (recent.length < 2) return 0;
       const totalDx = recent.reduce((sum, s) => sum + s.dx, 0);
       const dt = recent[recent.length - 1].t - recent[0].t;
       if (dt === 0) return 0;
-      return (totalDx / dt) * 16; // normalize to ~frame time
+      return (totalDx / dt) * 16;
     }
 
-    // --- Inertia ---
     function startInertia() {
       cancelInertia();
       function step() {
         velocity *= FRICTION;
-
-        // Stop condition
-        if (Math.abs(velocity) < MIN_VELOCITY) {
-          velocity = 0;
-          return;
-        }
-
-        fractionalPos = fractionalPos + velocity;
-
-        // Clamp and kill velocity at edges
-        if (fractionalPos <= 0) {
-          fractionalPos = 0;
-          velocity = 0;
-        } else if (fractionalPos >= maxFrame) {
-          fractionalPos = maxFrame;
-          velocity = 0;
-        }
-
-        drawFrame(Math.round(fractionalPos));
+        if (Math.abs(velocity) < MIN_VELOCITY) { velocity = 0; return; }
+        fractionalPos += velocity;
+        drawFrame(fractionalPos);
         rafId = requestAnimationFrame(step);
       }
       rafId = requestAnimationFrame(step);
     }
 
     function cancelInertia() {
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
+      if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
     }
 
-    function clamp(val, min, max) {
-      return val < min ? min : val > max ? max : val;
-    }
-
-    // --- Bind events ---
     canvas.addEventListener('pointerdown', onPointerDown);
     canvas.addEventListener('pointermove', onPointerMove);
-    canvas.addEventListener('pointerup',   onPointerUp);
+    canvas.addEventListener('pointerup', onPointerUp);
     canvas.addEventListener('pointercancel', onPointerUp);
-
-    // Prevent default touch behavior (scroll, zoom)
     canvas.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
-
-    // Prevent context menu on long press
     canvas.addEventListener('contextmenu', e => e.preventDefault());
-
-    // --- Responsive resize ---
-    function onResize() {
-      // Canvas element width is set by CSS (100%), but we keep internal resolution fixed
-      // drawImage handles the scaling. Nothing extra needed since canvas width/height
-      // is the source resolution and CSS scales the element.
-    }
-    window.addEventListener('resize', onResize);
   }
 
   init();
