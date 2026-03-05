@@ -18,17 +18,70 @@
     overflow: hidden;
   }
 
+  /* --- Quality picker --- */
+  #quality-picker {
+    text-align: center;
+    transition: opacity 0.4s;
+  }
+  #quality-picker.hidden {
+    opacity: 0;
+    pointer-events: none;
+    position: absolute;
+  }
+  #quality-picker h2 {
+    font-size: 18px;
+    font-weight: 400;
+    letter-spacing: 1px;
+    margin-bottom: 28px;
+    opacity: 0.8;
+  }
+  .quality-options {
+    display: flex;
+    gap: 16px;
+  }
+  .quality-card {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px;
+    padding: 24px 32px;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-width: 160px;
+  }
+  .quality-card:hover {
+    background: rgba(255,255,255,0.1);
+    border-color: rgba(255,255,255,0.3);
+  }
+  .quality-card .label {
+    font-size: 16px;
+    font-weight: 500;
+    margin-bottom: 8px;
+  }
+  .quality-card .res {
+    font-size: 12px;
+    opacity: 0.4;
+    margin-bottom: 12px;
+  }
+  .quality-card .size {
+    font-size: 14px;
+    opacity: 0.6;
+    font-variant-numeric: tabular-nums;
+  }
+
   /* --- Preloader --- */
   #preloader {
     position: fixed;
     inset: 0;
-    display: flex;
+    display: none;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     background: #111;
     z-index: 100;
     transition: opacity 0.4s;
+  }
+  #preloader.active {
+    display: flex;
   }
   #preloader.hidden {
     opacity: 0;
@@ -67,12 +120,13 @@
     width: 100%;
     max-width: 900px;
     padding: 0 16px;
+    display: none;
     opacity: 0;
     transition: opacity 0.5s;
     user-select: none;
     -webkit-user-select: none;
   }
-  #viewer.visible { opacity: 1; }
+  #viewer.visible { display: block; opacity: 1; }
 
   /* --- Switcher --- */
   #switcher {
@@ -157,6 +211,8 @@
 
   @media (max-width: 768px) and (orientation: portrait) {
     #rotate-hint { display: block; }
+    .quality-options { flex-direction: column; gap: 12px; }
+    .quality-card { min-width: auto; }
   }
 
   @media (max-width: 932px) and (orientation: landscape) {
@@ -164,11 +220,14 @@
     #viewer {
       max-width: 100%;
       padding: 0;
-      display: flex;
+      display: none;
       flex-direction: column;
       justify-content: center;
       height: 100vh;
       height: 100dvh;
+    }
+    #viewer.visible {
+      display: flex;
     }
     #switcher {
       position: fixed;
@@ -199,6 +258,22 @@
 </head>
 <body>
 
+<div id="quality-picker">
+  <h2>Pizza 360° Viewer</h2>
+  <div class="quality-options">
+    <div class="quality-card" data-quality="hd">
+      <div class="label">HD</div>
+      <div class="res">1280 × 720</div>
+      <div class="size">~50 MB</div>
+    </div>
+    <div class="quality-card" data-quality="sd">
+      <div class="label">Light</div>
+      <div class="res">960 × 540</div>
+      <div class="size">~24 MB</div>
+    </div>
+  </div>
+</div>
+
 <div id="preloader">
   <div id="preloader-text">Loading 360°</div>
   <div id="progress-bar-outer">
@@ -222,14 +297,11 @@
 (function () {
   'use strict';
 
-  // Build frame index map for set 2: skip frames around the junction (frame 240)
-  // to avoid the static-looking transition
-  const JUNCTION = 240;       // where pizza3-reverse ends and pizza2 begins
-  const SKIP_HALF = 30;       // how many frames on each side to thin out
-  const SKIP_STEP = 3;        // take every Nth frame in the skip zone
-
-  const SET2_START = 60;      // first usable file index (0-based)
-  const SET2_END   = 430;     // last usable file index (0-based)
+  const JUNCTION = 240;
+  const SKIP_HALF = 30;
+  const SKIP_STEP = 3;
+  const SET2_START = 60;
+  const SET2_END   = 430;
 
   function buildSet2Map() {
     const map = [];
@@ -243,29 +315,47 @@
     }
     return map;
   }
-  const set2Map = buildSet2Map();
+  const junctionMap = buildSet2Map();
 
-  const SETS = [
-    { total: 480, path: (i) => `public/assets/frames2/frame_${String(i + 1).padStart(3, '0')}.webp`, frameMap: set2Map },
-    { total: 240, path: (i) => `public/assets/frames/frame_${String(i + 1).padStart(3, '0')}.webp` },
-  ];
+  const QUALITIES = {
+    hd: {
+      width: 1280, height: 720,
+      sets: [
+        { total: 480, path: (i) => `public/assets/frames2/frame_${String(i + 1).padStart(3, '0')}.webp`, frameMap: junctionMap },
+        { total: 240, path: (i) => `public/assets/frames/frame_${String(i + 1).padStart(3, '0')}.webp` },
+      ]
+    },
+    sd: {
+      width: 960, height: 540,
+      sets: [
+        { total: 480, path: (i) => `public/assets/frames4/frame_${String(i + 1).padStart(3, '0')}.webp`, frameMap: junctionMap },
+        { total: 240, path: (i) => `public/assets/frames3/frame_${String(i + 1).padStart(3, '0')}.webp` },
+      ]
+    }
+  };
 
-  const FRAME_WIDTH  = 1280;
-  const FRAME_HEIGHT = 720;
   const SENSITIVITY  = 1.2;
   const FRICTION     = 0.92;
   const MIN_VELOCITY = 0.3;
 
-  const preloader   = document.getElementById('preloader');
-  const progressBar = document.getElementById('progress-bar-inner');
-  const progressPct = document.getElementById('progress-percent');
-  const viewer      = document.getElementById('viewer');
-  const canvas      = document.getElementById('canvas');
-  const ctx         = canvas.getContext('2d');
-  const buttons     = document.querySelectorAll('.switch-btn');
+  const qualityPicker = document.getElementById('quality-picker');
+  const preloader     = document.getElementById('preloader');
+  const progressBar   = document.getElementById('progress-bar-inner');
+  const progressPct   = document.getElementById('progress-percent');
+  const viewer        = document.getElementById('viewer');
+  const canvas        = document.getElementById('canvas');
+  const ctx           = canvas.getContext('2d');
+  const buttons       = document.querySelectorAll('.switch-btn');
 
-  // Load all sets (only mapped frames for sets with frameMap)
-  function preloadAllSets() {
+  document.querySelectorAll('.quality-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const q = card.dataset.quality;
+      qualityPicker.classList.add('hidden');
+      startLoading(QUALITIES[q]);
+    });
+  });
+
+  function preloadSets(SETS) {
     let totalImages = 0;
     SETS.forEach(set => { totalImages += set.frameMap ? set.frameMap.length : set.total; });
     let loaded = 0;
@@ -293,11 +383,14 @@
     });
   }
 
-  async function init() {
-    const allSets = await preloadAllSets();
+  async function startLoading(quality) {
+    preloader.classList.add('active');
 
-    canvas.width  = FRAME_WIDTH;
-    canvas.height = FRAME_HEIGHT;
+    const SETS = quality.sets;
+    const allSets = await preloadSets(SETS);
+
+    canvas.width  = quality.width;
+    canvas.height = quality.height;
 
     preloader.classList.add('hidden');
     viewer.classList.add('visible');
@@ -321,15 +414,9 @@
       return cycle - mod - 1;
     }
 
-    function loopWrap(pos, len) {
-      return ((pos % len) + len) % len;
-    }
-
-    function isLoop() { return !!SETS[activeSet].loop; }
-
     function drawFrame(virtualPos) {
       const len = frames.length;
-      const idx = Math.round(isLoop() ? loopWrap(virtualPos, len) : pingPong(virtualPos, len));
+      const idx = Math.round(pingPong(virtualPos, len));
       currentFrame = Math.max(0, Math.min(len - 1, idx));
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(frames[currentFrame], 0, 0, canvas.width, canvas.height);
@@ -354,7 +441,6 @@
 
     drawFrame(0);
 
-    // --- Pointer handlers ---
     function onPointerDown(e) {
       if (e.button && e.button !== 0) return;
       dragging = true;
@@ -424,8 +510,6 @@
     canvas.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
     canvas.addEventListener('contextmenu', e => e.preventDefault());
   }
-
-  init();
 })();
 </script>
 </body>
