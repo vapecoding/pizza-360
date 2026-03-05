@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pizza 360°</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #111;
+    color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+
+  /* --- Preloader --- */
+  #preloader {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: #111;
+    z-index: 100;
+    transition: opacity 0.4s;
+  }
+  #preloader.hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+  #preloader-text {
+    font-size: 14px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 24px;
+    opacity: 0.7;
+  }
+  #progress-bar-outer {
+    width: 240px;
+    height: 3px;
+    background: rgba(255,255,255,0.15);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  #progress-bar-inner {
+    height: 100%;
+    width: 0%;
+    background: #fff;
+    border-radius: 2px;
+    transition: width 0.1s;
+  }
+  #progress-percent {
+    margin-top: 12px;
+    font-size: 13px;
+    opacity: 0.5;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* --- Viewer --- */
+  #viewer {
+    width: 100%;
+    max-width: 900px;
+    padding: 0 16px;
+    opacity: 0;
+    transition: opacity 0.5s;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #viewer.visible { opacity: 1; }
+
+  #canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    cursor: grab;
+    border-radius: 8px;
+  }
+  #canvas.grabbing { cursor: grabbing; }
+
+  #hint {
+    text-align: center;
+    margin-top: 12px;
+    font-size: 13px;
+    opacity: 0.35;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+
+<div id="preloader">
+  <div id="preloader-text">Loading 360°</div>
+  <div id="progress-bar-outer">
+    <div id="progress-bar-inner"></div>
+  </div>
+  <div id="progress-percent">0%</div>
+</div>
+
+<div id="viewer">
+  <canvas id="canvas"></canvas>
+  <div id="hint">drag to rotate</div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ============================================================
+  //  CONFIG
+  // ============================================================
+  const TOTAL_FRAMES  = 240;
+  const FRAME_WIDTH   = 1280;
+  const FRAME_HEIGHT  = 720;
+  const USE_REAL_FRAMES = true;
+  const FRAME_PATH    = (i) => `public/assets/frames/frame_${String(i + 1).padStart(3, '0')}.webp`;
+
+  // Physics
+  const SENSITIVITY   = 0.4;           // px drag per frame switch
+  const FRICTION      = 0.92;
+  const MIN_VELOCITY  = 0.3;
+
+  // ============================================================
+  //  DOM refs
+  // ============================================================
+  const preloader   = document.getElementById('preloader');
+  const progressBar = document.getElementById('progress-bar-inner');
+  const progressPct = document.getElementById('progress-percent');
+  const viewer      = document.getElementById('viewer');
+  const canvas      = document.getElementById('canvas');
+  const ctx         = canvas.getContext('2d');
+
+  // ============================================================
+  //  Generate placeholder frames (offscreen canvases)
+  // ============================================================
+  function generatePlaceholderFrame(index, total) {
+    const oc = document.createElement('canvas');
+    oc.width  = FRAME_WIDTH;
+    oc.height = FRAME_HEIGHT;
+    const c   = oc.getContext('2d');
+
+    // Background gradient that shifts with angle
+    const angle = (index / total) * 360;
+    const hue   = angle;
+    c.fillStyle = `hsl(${hue}, 18%, 12%)`;
+    c.fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
+
+    // "Pizza" circle
+    const cx = FRAME_WIDTH / 2;
+    const cy = FRAME_HEIGHT / 2;
+    const r  = Math.min(FRAME_WIDTH, FRAME_HEIGHT) * 0.35;
+
+    // Simulate 3D rotation: slight ellipse distortion
+    const rotRad    = (angle * Math.PI) / 180;
+    const scaleX    = 0.85 + 0.15 * Math.cos(rotRad);
+    const offsetX   = Math.sin(rotRad) * 30;
+
+    c.save();
+    c.translate(cx + offsetX, cy);
+    c.scale(scaleX, 1);
+
+    // Crust
+    c.beginPath();
+    c.arc(0, 0, r, 0, Math.PI * 2);
+    c.fillStyle = '#d4a24e';
+    c.fill();
+
+    // Sauce
+    c.beginPath();
+    c.arc(0, 0, r * 0.88, 0, Math.PI * 2);
+    c.fillStyle = '#c0392b';
+    c.fill();
+
+    // Cheese
+    c.beginPath();
+    c.arc(0, 0, r * 0.82, 0, Math.PI * 2);
+    c.fillStyle = '#f5d76e';
+    c.fill();
+
+    // Pepperoni slices — positions rotate with the angle
+    const pepCount = 8;
+    for (let p = 0; p < pepCount; p++) {
+      const a = ((p / pepCount) * Math.PI * 2) + rotRad;
+      const pr = r * 0.55;
+      const px = Math.cos(a) * pr;
+      const py = Math.sin(a) * pr;
+      c.beginPath();
+      c.arc(px, py, r * 0.1, 0, Math.PI * 2);
+      c.fillStyle = '#922b21';
+      c.fill();
+    }
+
+    c.restore();
+
+    // Frame indicator
+    c.fillStyle = 'rgba(255,255,255,0.25)';
+    c.font = '16px monospace';
+    c.fillText(`frame ${index + 1} / ${total}`, 16, 28);
+
+    // Angle indicator
+    c.fillStyle = 'rgba(255,255,255,0.15)';
+    c.font = '13px monospace';
+    c.fillText(`${angle.toFixed(0)}°`, 16, 48);
+
+    return oc;
+  }
+
+  // ============================================================
+  //  Preload
+  // ============================================================
+  function preloadFrames() {
+    return new Promise((resolve) => {
+      const frames = new Array(TOTAL_FRAMES);
+      let loaded = 0;
+
+      function onProgress() {
+        loaded++;
+        const pct = Math.round((loaded / TOTAL_FRAMES) * 100);
+        progressBar.style.width = pct + '%';
+        progressPct.textContent = pct + '%';
+        if (loaded === TOTAL_FRAMES) resolve(frames);
+      }
+
+      if (USE_REAL_FRAMES) {
+        // Real image loading
+        for (let i = 0; i < TOTAL_FRAMES; i++) {
+          const img = new Image();
+          img.onload  = () => { frames[i] = img; onProgress(); };
+          img.onerror = () => { frames[i] = img; onProgress(); };
+          img.src = FRAME_PATH(i);
+        }
+      } else {
+        // Placeholder generation (simulate async with microtasks)
+        let i = 0;
+        function generateBatch() {
+          const batchEnd = Math.min(i + 8, TOTAL_FRAMES);
+          while (i < batchEnd) {
+            frames[i] = generatePlaceholderFrame(i, TOTAL_FRAMES);
+            i++;
+            onProgress();
+          }
+          if (i < TOTAL_FRAMES) {
+            setTimeout(generateBatch, 0);
+          }
+        }
+        generateBatch();
+      }
+    });
+  }
+
+  // ============================================================
+  //  Viewer
+  // ============================================================
+  async function init() {
+    const frames = await preloadFrames();
+
+    // Determine canvas size from first frame
+    const fw = frames[0].width  || FRAME_WIDTH;
+    const fh = frames[0].height || FRAME_HEIGHT;
+    canvas.width  = fw;
+    canvas.height = fh;
+
+    // Hide preloader, show viewer
+    preloader.classList.add('hidden');
+    viewer.classList.add('visible');
+
+    // --- State ---
+    let currentFrame   = 0;
+    let fractionalPos  = 0;      // sub-frame position for smooth physics
+    let velocity       = 0;
+    let dragging       = false;
+    let lastPointerX   = 0;
+    let rafId          = null;
+
+    // Velocity tracking (last N samples)
+    const velSamples   = [];
+    const MAX_SAMPLES  = 5;
+
+    const maxFrame = TOTAL_FRAMES - 1;
+
+    // --- Render ---
+    function drawFrame(idx) {
+      idx = Math.max(0, Math.min(maxFrame, idx));
+      if (idx !== currentFrame) {
+        currentFrame = idx;
+      }
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(frames[currentFrame], 0, 0, canvas.width, canvas.height);
+    }
+
+    drawFrame(0);
+
+    // --- Pointer handlers ---
+    function onPointerDown(e) {
+      if (e.button && e.button !== 0) return;
+      dragging = true;
+      velocity = 0;
+      cancelInertia();
+      lastPointerX = e.clientX;
+      velSamples.length = 0;
+      canvas.classList.add('grabbing');
+      canvas.setPointerCapture(e.pointerId);
+    }
+
+    function onPointerMove(e) {
+      if (!dragging) return;
+      const dx = e.clientX - lastPointerX;
+      lastPointerX = e.clientX;
+
+      // Scale sensitivity to canvas display width
+      const displayWidth = canvas.getBoundingClientRect().width;
+      const pxPerFrame = (displayWidth / TOTAL_FRAMES) * SENSITIVITY;
+      const frameDelta = dx / Math.max(pxPerFrame, 0.1);
+
+      fractionalPos = clamp(fractionalPos - frameDelta, 0, maxFrame);
+      drawFrame(Math.round(fractionalPos));
+
+      // Track velocity
+      velSamples.push({ dx: -frameDelta, t: performance.now() });
+      if (velSamples.length > MAX_SAMPLES) velSamples.shift();
+    }
+
+    function onPointerUp(e) {
+      if (!dragging) return;
+      dragging = false;
+      canvas.classList.remove('grabbing');
+
+      // Calculate release velocity from recent samples
+      velocity = computeReleaseVelocity();
+      if (Math.abs(velocity) > MIN_VELOCITY) {
+        startInertia();
+      }
+    }
+
+    function computeReleaseVelocity() {
+      if (velSamples.length < 2) return 0;
+      const now = performance.now();
+      // Only use samples from last 100ms
+      const recent = velSamples.filter(s => now - s.t < 100);
+      if (recent.length < 2) return 0;
+      const totalDx = recent.reduce((sum, s) => sum + s.dx, 0);
+      const dt = recent[recent.length - 1].t - recent[0].t;
+      if (dt === 0) return 0;
+      return (totalDx / dt) * 16; // normalize to ~frame time
+    }
+
+    // --- Inertia ---
+    function startInertia() {
+      cancelInertia();
+      function step() {
+        velocity *= FRICTION;
+
+        // Stop condition
+        if (Math.abs(velocity) < MIN_VELOCITY) {
+          velocity = 0;
+          return;
+        }
+
+        fractionalPos = fractionalPos + velocity;
+
+        // Clamp and kill velocity at edges
+        if (fractionalPos <= 0) {
+          fractionalPos = 0;
+          velocity = 0;
+        } else if (fractionalPos >= maxFrame) {
+          fractionalPos = maxFrame;
+          velocity = 0;
+        }
+
+        drawFrame(Math.round(fractionalPos));
+        rafId = requestAnimationFrame(step);
+      }
+      rafId = requestAnimationFrame(step);
+    }
+
+    function cancelInertia() {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    }
+
+    function clamp(val, min, max) {
+      return val < min ? min : val > max ? max : val;
+    }
+
+    // --- Bind events ---
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerup',   onPointerUp);
+    canvas.addEventListener('pointercancel', onPointerUp);
+
+    // Prevent default touch behavior (scroll, zoom)
+    canvas.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
+
+    // Prevent context menu on long press
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+    // --- Responsive resize ---
+    function onResize() {
+      // Canvas element width is set by CSS (100%), but we keep internal resolution fixed
+      // drawImage handles the scaling. Nothing extra needed since canvas width/height
+      // is the source resolution and CSS scales the element.
+    }
+    window.addEventListener('resize', onResize);
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
