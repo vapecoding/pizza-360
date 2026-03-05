@@ -221,8 +221,8 @@
       max-width: 100%;
       padding: 0;
       display: none;
-      flex-direction: column;
-      justify-content: center;
+      flex-direction: row;
+      align-items: center;
       height: 100vh;
       height: 100dvh;
     }
@@ -231,15 +231,17 @@
     }
     #switcher {
       position: fixed;
-      top: 8px;
-      left: 50%;
-      transform: translateX(-50%);
+      left: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      flex-direction: column;
       z-index: 10;
       margin-bottom: 0;
+      gap: 6px;
     }
     .switch-btn {
-      padding: 4px 14px;
-      font-size: 12px;
+      padding: 6px 12px;
+      font-size: 11px;
       background: rgba(0,0,0,0.6);
       backdrop-filter: blur(8px);
       -webkit-backdrop-filter: blur(8px);
@@ -250,9 +252,11 @@
       height: 100vh;
       height: 100dvh;
       object-fit: contain;
+      flex: 1;
     }
     #hint { display: none; }
     #rotate-hint { display: none; }
+    #viewer-progress { display: none; }
   }
 </style>
 </head>
